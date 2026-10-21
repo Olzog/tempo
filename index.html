@@ -536,6 +536,7 @@ a.li:hover{text-decoration:none}
 .setup{font-size:13.5px;line-height:1.5}
 .setup b{font-size:15px}
 .setup p{margin:6px 0;color:var(--muted)}
+.setup-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-top:8px}
 .setup ol{margin:6px 0 12px;padding-left:20px;display:grid;gap:4px}
 #music-btn.playing{color:var(--good-fill);border-color:var(--good-fill)}
 #music-btn.on.playing{color:#fff;background:var(--good-fill)}
@@ -1921,21 +1922,26 @@ function paintQueue(scroll) {
 }
 
 /* ---------- Lecture en cours (appli Deezer du PC) ---------- */
-const LIVE = { connected: false, data: null, at: 0, timer: null, dragging: false, artKey: '', checked: false };
+const LIVE = { connected: false, data: null, at: 0, timer: null, dragging: false, artKey: '', checked: false, refused: false, version: 0, burst: 0 };
+const HELPER_VERSION = 2;
+const ON_SITE = location.protocol === 'https:' && !IN_VIEWER;
 async function liveFetch(path, opts = {}) {
   const ac = new AbortController(); const t = setTimeout(() => ac.abort(), 1500);
-  try { const r = await fetch(LIVE_URL + path, { ...opts, cache: 'no-store', signal: ac.signal }); return await r.json(); }
+  try { const r = await fetch(LIVE_URL + path, { ...opts, cache: 'no-store', signal: ac.signal }); if (!r.ok) { const e = new Error('http ' + r.status); e.status = r.status; throw e; } return await r.json(); }
   finally { clearTimeout(t); }
 }
 async function livePoll() {
   clearTimeout(LIVE.timer);
   if (IN_VIEWER) return;
-  const was = LIVE.connected;
-  try { const d = await liveFetch('/now'); LIVE.connected = true; LIVE.data = d.active ? d : null; LIVE.at = performance.now(); }
-  catch { LIVE.connected = false; LIVE.data = null; }
+  const was = LIVE.connected, wasRef = LIVE.refused;
+  try {
+    const d = await liveFetch('/now'); LIVE.connected = true; LIVE.refused = false; LIVE.data = d.active ? d : null; LIVE.at = performance.now();
+    if (!was) { try { LIVE.version = (await liveFetch('/ping')).version || 1; } catch { LIVE.version = 1; } }
+  } catch (e) { LIVE.connected = false; LIVE.data = null; LIVE.refused = e.status === 403; }
   LIVE.checked = true;
-  if (was !== LIVE.connected) { renderMusic(false); if (ROUTE === '/') render(); } else paintLive();
+  if (was !== LIVE.connected || wasRef !== LIVE.refused) { renderMusic(false); if (ROUTE === '/') render(); } else paintLive();
   const M = musicState(); const watching = (M.open || ROUTE === '/') && !document.hidden;
+  if (LIVE.burst > 0 && !LIVE.connected) { LIVE.burst--; LIVE.timer = setTimeout(livePoll, 1000); return; }
   LIVE.timer = setTimeout(livePoll, LIVE.connected ? (watching ? 1000 : 4000) : 8000);
 }
 async function liveCmd(a, pos) {
@@ -1988,12 +1994,25 @@ document.addEventListener('input', e => { if (e.target.matches('.live-seek')) { 
 document.addEventListener('change', e => { if (e.target.matches('.live-seek')) { LIVE.dragging = false; liveCmd('seek', Number(e.target.value)); } });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !IN_VIEWER) livePoll(); });
 
+function launchHelper() { LIVE.burst = 15; LIVE.checked = false; renderMusic(false); setTimeout(livePoll, 1200); }
+function installLink(cls = 'btn ghost sm') {
+  return ON_SITE ? `<a class="${cls}" href="tempo-musique.zip" download>Télécharger l’installateur</a>` : '<span class="small muted">Installateur : fichier « Installer Tempo Musique.bat » du dossier Tempo.</span>';
+}
 function liveSetupHTML() {
+  if (LIVE.refused) return `<div class="music-body"><div class="setup">
+    <b>Mettez à jour Tempo Musique</b>
+    <p>La version installée sur ce PC est trop ancienne pour fonctionner avec ce site. Téléchargez la nouvelle, puis lancez « Installer Tempo Musique.bat » : il remplace l’ancienne automatiquement.</p>
+    <div class="setup-actions">${installLink('btn primary sm')}<button class="btn tinted sm" data-music="retry">J’ai mis à jour</button></div></div></div>`;
   return `<div class="music-body"><div class="setup">
     <b>Écouter en entier avec votre compte Premium</b>
-    <p>Deezer ne permet plus aux applications tierces de jouer les titres complets. Tempo pilote donc l’appli Deezer de votre PC :</p>
-    <ol><li>Ouvrez l’appli Deezer et connectez-vous à votre compte.</li><li>Lancez <b>Lancer Tempo Musique.bat</b> (fourni avec Tempo) et laissez sa fenêtre ouverte.</li><li>Lancez un titre dans Deezer : il apparaît ici, avec pochette, progression et commandes.</li></ol>
-    <button class="btn tinted sm" data-music="retry">Réessayer la connexion</button></div></div>`;
+    <p>Tempo pilote l’appli Deezer de votre PC grâce au petit programme Tempo Musique.</p>
+    <div class="setup-actions"><a class="btn primary sm" href="tempo-musique://start" data-music="launch">▶︎ Démarrer Tempo Musique</a><button class="btn tinted sm" data-music="retry">Réessayer</button></div>
+    <p class="small" style="margin-top:12px"><b style="font-size:13px">Première fois sur ce PC ?</b> Installez-le une fois : il ajoute ce bouton à Windows et peut démarrer tout seul avec l’ordinateur.</p>
+    <div class="setup-actions">${installLink()}</div>
+    <p class="small">Ensuite, ouvrez l’appli Deezer, lancez un titre : il apparaît ici avec sa pochette, la progression et les titres suivants.</p></div></div>`;
+}
+function liveOutdatedNote() {
+  return LIVE.connected && LIVE.version < HELPER_VERSION ? `<p class="small muted" style="margin:10px 4px 0">Une nouvelle version de Tempo Musique est disponible. ${ON_SITE ? '<a href="tempo-musique.zip" download>Télécharger</a>' : ''}</p>` : '';
 }
 
 /* ---------- Panneau ---------- */
@@ -2015,7 +2034,7 @@ function renderMusic(reloadFrame) {
   // Onglet « En cours »
   ml.hidden = !live;
   if (live) {
-    if (LIVE.connected) { if (!$('[data-live]', ml)) ml.innerHTML = `<div class="music-body">${liveSkeleton(true)}</div>`; paintLive(); }
+    if (LIVE.connected) { if (!$('[data-live]', ml)) ml.innerHTML = `<div class="music-body">${liveSkeleton(true)}${liveOutdatedNote()}</div>`; paintLive(); }
     else ml.innerHTML = LIVE.checked ? liveSetupHTML() : '<div class="music-body"><p class="music-empty">Recherche de Tempo Musique sur ce PC…</p></div>';
   }
   // Onglet « Playlists » : l'iframe n'est jamais déplacée ni recréée sans raison (sinon la musique s'arrête)
@@ -2047,6 +2066,7 @@ function initMusic() {
     if (a === 'tab-live') { M.tab = 'live'; save(); renderMusic(false); livePoll(); }
     if (a === 'tab-lists') { M.tab = 'lists'; save(); renderMusic(false); }
     if (a === 'retry') { LIVE.checked = false; renderMusic(false); livePoll(); }
+    if (a === 'launch') launchHelper();
     if (a === 'add') { const v = $('#music-url').value; if (v && addMusicSource(v)) toast('Ajouté au lecteur'); }
     if (a === 'rm') { const s = curSource(); M.sources = M.sources.filter(x => x.id !== s.id); M.current = M.sources[0]?.id || ''; save(); renderMusic(true); }
   });
@@ -2059,8 +2079,8 @@ function musicBlock() {
   if (LIVE.connected) return block('En écoute', liveSkeleton(false), `<button class="link" data-on="${on(() => toggleMusic(true))}">Ouvrir le lecteur</button>`);
   return block('Musique', s
     ? `<div style="display:flex;gap:12px;align-items:center"><div class="music-art" style="${s.cover ? `background-image:url('${esc(s.cover)}')` : ''}">${s.cover ? '' : '♫'}</div><div style="min-width:0;flex:1"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.title)}</b><span class="small muted">${esc(s.sub || MUSIC_TYPES[s.type])}</span></div></div>
-       <div style="display:flex;gap:8px;margin-top:14px"><button class="btn primary" data-on="${on(() => toggleMusic(true))}">▶︎ Ouvrir le lecteur</button></div>`
-    : `<p class="muted" style="margin:0 0 12px">Écoutez Deezer pendant que vous travaillez, en entier avec votre compte Premium.</p><button class="btn tinted" data-on="${on(() => toggleMusic(true))}">♫ Configurer le lecteur</button>`);
+       <div class="setup-actions" style="margin-top:14px">${IN_VIEWER ? '' : `<a class="btn primary" href="tempo-musique://start" data-on="${on(() => { launchHelper(); toggleMusic(true); })}">▶︎ Démarrer Tempo Musique</a>`}<button class="btn tinted" data-on="${on(() => toggleMusic(true))}">Ouvrir le lecteur</button></div>`
+    : `<p class="muted" style="margin:0 0 12px">Écoutez Deezer pendant que vous travaillez, en entier avec votre compte Premium.</p><div class="setup-actions">${IN_VIEWER ? '' : `<a class="btn primary" href="tempo-musique://start" data-on="${on(() => { launchHelper(); toggleMusic(true); })}">▶︎ Démarrer Tempo Musique</a>`}<button class="btn tinted" data-on="${on(() => toggleMusic(true))}">♫ Ouvrir le lecteur</button></div>`);
 }
 
 /* =========================================================
